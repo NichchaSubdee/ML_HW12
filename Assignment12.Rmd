@@ -11,13 +11,11 @@ knitr::opts_chunk$set(echo = TRUE)
 
 This assignment applies **elastic net** as an additional method for estimating propensity scores using the same dataset from class (`nmes_data`). After propensity scores are estimated, individuals are matched and the association between smoking and respiratory outcomes is evaluated. The elastic net results are compared with logistic regression and random forest in terms of the number of individuals retained, covariate balance, and the estimated effect. The final model is then selected based on overall performance.
 
-#### **Dataset**
+#### **nmes_data dataset**
 
-The data come from a subset of the 1987 U.S. National Medical Expenditures Survey. The exposure is `eversmk`, which indicates whether a person has ever smoked, and the outcome is `lc5`, which indicates lung cancer, laryngeal cancer, or COPD.
+The data come from a subset of the 1987 U.S. National Medical Expenditures Survey. The exposure is `eversmk` (a person has ever smoked or not), and the outcome is `lc5` (lung cancer, laryngeal cancer, or COPD). The covariates used to estimate the propensity score are _age, sex, race, education, seatbelt use, marital status, census region, and poverty status._
 
-The covariates used to estimate the propensity score are age, sex, race, education, seatbelt use, marital status, census region, and poverty status.
-
-***
+---
 
 ### **Data preparation**
 
@@ -34,20 +32,24 @@ library(glmnet)
 #### Data cleaning
 
 ```{r prepare_data}
-#Import data
+# Import data
 nmes_data <- read.delim("./nmes_data.txt")
 
-#Keep only needed variables
+# Keep only needed variables
 keep.var <- c("LASTAGE", "MALE", "RACE3", "eversmk", "lc5", "beltuse",
               "educate", "marital", "SREGION", "POVSTALB")
 nmes.data <- nmes_data[, keep.var]
 
 str(nmes.data)
+```
 
-#Missing -- convert to "NA"
+_Note:_ There are 13,648 observations and 10 variables.
+
+```{r prepare_data2}
+# Missing -- convert to "NA"
 nmes.data[nmes.data == "."] <- NA
 
-#Converting to factor
+# Converting to factor
 nmes.data$MALE <- as.factor(nmes.data$MALE)
 nmes.data$educate <- as.factor(nmes.data$educate)
 nmes.data$RACE3 <- as.factor(nmes.data$RACE3)
@@ -58,29 +60,13 @@ nmes.data$beltuse <- as.factor(nmes.data$beltuse)
 nmes.data$marital <- as.factor(nmes.data$marital)
 nmes.data$POVSTALB <- factor(nmes.data$POVSTALB, order = TRUE)
 
-#Keep only complete cases
+# Keep only complete cases
 nmesdata <- na.omit(nmes.data)
 ```
 
+#### Descriptive plot
 
----
-
-### **Logistic regression propensity score**
-
-We first estimated the propensity score using logistic regression with all covariates included in the model. The predicted probabilities from this model were saved as the logistic regression propensity scores.
-
-```{r ps_logit}
-ps.model.logit <- glm(
-  eversmk ~ LASTAGE + MALE + educate + beltuse + POVSTALB + marital + RACE3 + SREGION,
-  data = nmesdata,
-  family = binomial(link = "logit")
-)
-
-summary(ps.model.logit)
-
-prop.score <- predict(ps.model.logit, nmesdata, type = "response")
-nmesdata$PS.LOGIT <- prop.score
-
+```{r descriptive_plot}
 temp <- table(nmesdata$eversmk, nmesdata$LASTAGE)
 pct.eversmk <- 100 * (temp[2, ] / (temp[2, ] + temp[1, ]))
 
@@ -93,9 +79,30 @@ plot(40:94, pct.eversmk,
      cex.axis = 1.5)
 ```
 
-### **Random forest propensity score**
+---
 
-Next, we estimated the propensity score using random forest. 
+### **Propensity score estimation**
+
+#### **Logistic regression propensity score**
+
+The propensity score is estimated by using logistic regression with all covariates included in the model.
+
+```{r ps_logit}
+ps.model.logit <- glm(
+  eversmk ~ LASTAGE + MALE + educate + beltuse + POVSTALB + marital + RACE3 + SREGION,
+  data = nmesdata,
+  family = binomial(link = "logit")
+)
+
+summary(ps.model.logit)
+
+prop.score <- predict(ps.model.logit, nmesdata, type = "response")
+nmesdata$PS.LOGIT <- prop.score
+```
+
+#### **Random forest propensity score**
+
+The propensity score is estimated by using random forest with all covariates included in the model.
 
 ```{r ps_rf}
 set.seed(123)
@@ -138,81 +145,11 @@ nmesdata$PS.RF <- ps.rf[, 2]
 plot(nmesdata$PS.LOGIT, nmesdata$PS.RF)
 ```
 
-#### **Propensity score overlap (Logistic & Random forest)**
+#### **Elastic net propensity score**
 
-Before matching, we examined the distribution of propensity scores in smokers and non-smokers to assess overlap. Matching works best when the two groups have similar ranges of propensity scores.
+Elastic net is used as an additional method to estimate the propensity score.
 
-```{r overlap_logit_rf}
-ggplot(data = nmesdata, aes(x = PS.LOGIT)) +
-  geom_histogram() +
-  facet_grid(~eversmk) +
-  theme_bw() +
-  ggtitle("Overlap PS from Logistic Regression")
-
-ggplot(data = nmesdata, aes(x = PS.RF)) +
-  geom_histogram() +
-  facet_grid(~eversmk) +
-  theme_bw() +
-  ggtitle("Overlap PS from Random Forest")
-```
-
-#### **Matching and balance**
-
-We used 1:1 nearest-neighbor matching with a caliper of 0.2 and discarded observations outside the common support region. After matching, we assessed covariate balance using standardized mean differences, where smaller values indicate better balance.
-
-```{r match_logit_rf}
-nn1 <- matchit(
-  eversmk ~ LASTAGE + MALE + educate + beltuse + POVSTALB + marital + RACE3 + SREGION,
-  data = nmesdata,
-  distance = nmesdata$PS.LOGIT,
-  method = "nearest",
-  discard = "both",
-  caliper = 0.2,
-  ratio = 1
-)
-
-nn1.data <- match.data(nn1)
-summary(nn1, standardize = TRUE)
-
-nn1.rf <- matchit(
-  eversmk ~ LASTAGE + MALE + educate + beltuse + POVSTALB + marital + RACE3 + SREGION,
-  data = nmesdata,
-  distance = nmesdata$PS.RF,
-  method = "nearest",
-  discard = "both",
-  caliper = 0.2,
-  ratio = 1
-)
-
-nn1.data.rf <- match.data(nn1.rf)
-summary(nn1.rf, standardize = TRUE)
-
-mean(abs(summary(nn1, standardize = TRUE)$sum.all[, 3][-1]))
-mean(abs(summary(nn1, standardize = TRUE)$sum.matched[, 3][-1]))
-mean(abs(summary(nn1.rf, standardize = TRUE)$sum.matched[, 3][-1]))
-```
-
-#### **Effect estimates**
-
-After matching, we fit logistic regression models for the outcome using smoking status as the predictor, and report odds ratios and confidence intervals for each matched sample.
-
-```{r effect_logit_rf}
-outcome.model.1 <- glm(lc5 ~ eversmk, data = nn1.data, family = binomial(link = "logit"))
-exp(outcome.model.1$coefficients)
-exp(confint(outcome.model.1))
-
-outcome.model.2 <- glm(lc5 ~ eversmk, data = nn1.data.rf, family = binomial(link = "logit"))
-exp(outcome.model.2$coefficients)
-exp(confint(outcome.model.2))
-```
-
----
-
-### **Elastic net propensity score**
-
-Elastic net is used as an additional method to estimate the propensity score. 
-
-```{r ps_elastic_net}
+```{r ps_elastic_net, warning=FALSE}
 set.seed(123)
 
 nn1.en <- matchit(
@@ -226,15 +163,40 @@ nn1.en <- matchit(
   ratio = 1
 )
 
-nn1.data.en <- match.data(nn1.en)
-summary(nn1.en, standardize = TRUE)
-
 nmesdata$PS.EN <- nn1.en$distance
+nn1.data.en <- match.data(nn1.en)
+sum.en <- summary(nn1.en, standardize = TRUE)
+
+summary(nn1.en, standardize = TRUE)
+```
+
+---
+
+### **Propensity score overlap**
+
+Before matching, we examined the distribution of propensity scores in smokers and non-smokers to assess overlap. Matching works best when the two groups have similar ranges of propensity scores.
+
+#### **Logistic regression overlap**
+
+```{r overlap_logit}
+ggplot(data = nmesdata, aes(x = PS.LOGIT)) +
+  geom_histogram() +
+  facet_grid(~eversmk) +
+  theme_bw() +
+  ggtitle("Overlap PS from Logistic Regression")
+```
+
+#### **Random forest overlap**
+
+```{r overlap_rf}
+ggplot(data = nmesdata, aes(x = PS.RF)) +
+  geom_histogram() +
+  facet_grid(~eversmk) +
+  theme_bw() +
+  ggtitle("Overlap PS from Random Forest")
 ```
 
 #### **Elastic net overlap**
-
-Examining the distribution of elastic net propensity scores in smokers and non-smokers before matching.
 
 ```{r overlap_elastic_net}
 ggplot(data = nmesdata, aes(x = PS.EN)) +
@@ -244,17 +206,90 @@ ggplot(data = nmesdata, aes(x = PS.EN)) +
   ggtitle("Overlap PS from Elastic Net")
 ```
 
+---
+
+### **Matching and balance assessment**
+
+We used 1:1 nearest-neighbor matching with a caliper of 0.2 and discarded observations outside the common support region. After matching, we assessed covariate balance using standardized mean differences, where smaller values indicate better balance.
+
+#### **Logistic regression matching and balance**
+
+```{r match_logit, warning=FALSE, message=FALSE}
+nn1 <- matchit(
+  eversmk ~ LASTAGE + MALE + educate + beltuse + POVSTALB + marital + RACE3 + SREGION,
+  data = nmesdata,
+  distance = nmesdata$PS.LOGIT,
+  method = "nearest",
+  discard = "both",
+  caliper = 0.2,
+  ratio = 1
+)
+
+nn1.data <- match.data(nn1)
+sum.logit <- summary(nn1, standardize = TRUE)
+
+summary(nn1, standardize = TRUE)
+```
+
+#### **Random forest matching and balance**
+
+```{r match_rf, warning=FALSE, message=FALSE}
+nn1.rf <- matchit(
+  eversmk ~ LASTAGE + MALE + educate + beltuse + POVSTALB + marital + RACE3 + SREGION,
+  data = nmesdata,
+  distance = nmesdata$PS.RF,
+  method = "nearest",
+  discard = "both",
+  caliper = 0.2,
+  ratio = 1
+)
+
+nn1.data.rf <- match.data(nn1.rf)
+sum.rf <- summary(nn1.rf, standardize = TRUE)
+
+summary(nn1.rf, standardize = TRUE)
+```
+
 #### **Elastic net balance**
 
 ```{r balance_elastic_net}
-mean(abs(summary(nn1.en, standardize = TRUE)$sum.matched[, 3][-1]))
+mean(abs(sum.en$sum.matched[, 3][-1]))
+```
+
+#### **Balance summary across models**
+
+```{r balance_summary}
+mean(abs(sum.logit$sum.all[, 3][-1]))
+mean(abs(sum.logit$sum.matched[, 3][-1]))
+mean(abs(sum.rf$sum.matched[, 3][-1]))
+mean(abs(sum.en$sum.matched[, 3][-1]))
+```
+
+---
+
+### **Effect estimates**
+
+After matching, we fit logistic regression models for the outcome using smoking status as the predictor, and report odds ratios and confidence intervals for each matched sample.
+
+#### **Logistic regression effect estimate**
+
+```{r effect_logit, message=FALSE, warning=FALSE}
+outcome.model.1 <- glm(lc5 ~ eversmk, data = nn1.data, family = binomial(link = "logit"))
+exp(outcome.model.1$coefficients)
+exp(confint(outcome.model.1))
+```
+
+#### **Random forest effect estimate**
+
+```{r effect_rf, message=FALSE, warning=FALSE}
+outcome.model.2 <- glm(lc5 ~ eversmk, data = nn1.data.rf, family = binomial(link = "logit"))
+exp(outcome.model.2$coefficients)
+exp(confint(outcome.model.2))
 ```
 
 #### **Elastic net effect estimate**
 
-Then, we estimate the association between smoking and respiratory disease in the elastic net matched sample.
-
-```{r effect_elastic_net}
+```{r effect_elastic_net, message=FALSE, warning=FALSE}
 outcome.model.3 <- glm(lc5 ~ eversmk, data = nn1.data.en,
                        family = binomial(link = "logit"))
 
@@ -266,17 +301,17 @@ exp(confint(outcome.model.3))
 
 ### **Model comparison**
 
-Finally, I compared the three propensity score models based on the number of individuals retained after matching, the average absolute standardized mean difference after matching, and the estimated odds ratio for smoking.
+Finally, the three propensity score models based on the number of individuals retained after matching, the average absolute standardized mean difference after matching, and the estimated odds ratio for smoking.
 
-```{r compare_models}
+```{r compare_models, message=FALSE, warning=FALSE}
 n.logit <- nrow(nn1.data)
 n.rf <- nrow(nn1.data.rf)
 n.en <- nrow(nn1.data.en)
 
-smd.unmatched <- mean(abs(summary(nn1, standardize = TRUE)$sum.all[, 3][-1]))
-smd.logit <- mean(abs(summary(nn1, standardize = TRUE)$sum.matched[, 3][-1]))
-smd.rf <- mean(abs(summary(nn1.rf, standardize = TRUE)$sum.matched[, 3][-1]))
-smd.en <- mean(abs(summary(nn1.en, standardize = TRUE)$sum.matched[, 3][-1]))
+smd.unmatched <- mean(abs(sum.logit$sum.all[, 3][-1]))
+smd.logit <- mean(abs(sum.logit$sum.matched[, 3][-1]))
+smd.rf <- mean(abs(sum.rf$sum.matched[, 3][-1]))
+smd.en <- mean(abs(sum.en$sum.matched[, 3][-1]))
 
 or.logit <- exp(coef(outcome.model.1)["eversmk1"])
 or.rf <- exp(coef(outcome.model.2)["eversmk1"])
@@ -289,7 +324,8 @@ ci.en <- exp(confint(outcome.model.3))["eversmk1", ]
 comparison <- data.frame(
   Model = c("Logistic Regression", "Random Forest", "Elastic Net"),
   N_included = c(n.logit, n.rf, n.en),
-  Avg_abs_SMD = round(c(smd.logit, smd.rf, smd.en), 4),
+  Unmatched_Avg_abs_SMD = round(c(smd.unmatched, smd.unmatched, smd.unmatched), 4),
+  Matched_Avg_abs_SMD = round(c(smd.logit, smd.rf, smd.en), 4),
   OR = round(c(or.logit, or.rf, or.en), 3),
   CI_Lower = round(c(ci.logit[1], ci.rf[1], ci.en[1]), 3),
   CI_Upper = round(c(ci.logit[2], ci.rf[2], ci.en[2]), 3)
@@ -298,10 +334,18 @@ comparison <- data.frame(
 knitr::kable(comparison, caption = "Comparison of propensity score models")
 ```
 
-### Interpretation
 
-The three propensity score models gave somewhat different results after matching. Logistic regression retained ___ individuals, random forest retained ___, and elastic net retained ___. The average absolute standardized mean difference after matching was ___ for logistic regression, ___ for random forest, and ___ for elastic net. The estimated odds ratio for ever smoking was ___ for logistic regression, ___ for random forest, and ___ for elastic net. I selected ___ as the final model because it achieved the best covariate balance while retaining a reasonable number of matched individuals.
+**Conclusion**
 
+The three propensity score models gave slightly different results after matching.
+
+* **Number retained:** Logistic regression retained 8,700 individuals, random forest retained 9,050, and elastic net retained 8,614.
+
+* **Average absolute standardized mean difference (SMD) after matching:** 0.0322 (logistic regression), 0.0600 (random forest), and 0.0592 (elastic net). 
+
+* **Odds ratio for ever smoking:** 6.079 (logistic regression), 5.793 (random forest), and 5.566 (elastic net). 
+
+Based on these results, **logistic regression** was selected as the final model because it achieved the lowest average absolute SMD after matching, indicating the best covariate balance among the three approaches. Although random forest retained the largest number of individuals, its post-matching balance was poorer than that of logistic regression. In addition, the estimated odds ratios were fairly similar across models, suggesting that logistic regression provided a reasonable effect estimate while also achieving the best overall balance with a sufficient matched sample size.
 
 
 ---
